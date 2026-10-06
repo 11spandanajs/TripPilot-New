@@ -427,23 +427,117 @@ def clean_place_name(name: str) -> str:
 
 def classify_place(place: Dict[str, Any]) -> str:
     """
-    Travel-manager classification based on available
-    category + name information.
+    Classify a place for TripPilot's travel-manager itinerary.
+
+    Important:
+    - Restaurants/cafes are food stops, never sightseeing.
+    - Hotels are accommodation.
+    - Hospitals/pharmacies are emergency services.
+    - Transport locations are transport.
+    - Only genuine attractions/nature/culture/shopping places
+      should be considered for sightseeing.
     """
 
     name = (
         place.get("name")
         or ""
-    ).lower()
+    ).strip().lower()
 
     category = (
         place.get("type")
         or ""
-    ).lower()
+    ).strip().lower()
 
     combined = f"{name} {category}"
 
-    # Beach / coastal
+    # ---------------------------------------------------------
+    # 1. Food — NEVER treat restaurants/cafes as sightseeing
+    # ---------------------------------------------------------
+    if category in {
+        "restaurant",
+        "cafe",
+        "food",
+    } or any(
+        word in combined
+        for word in [
+            "restaurant",
+            "cafe",
+            "café",
+            "coffee shop",
+            "bakery",
+            "diner",
+            "bar & grill",
+            "grill",
+        ]
+    ):
+        return "food"
+
+    # ---------------------------------------------------------
+    # 2. Accommodation
+    # ---------------------------------------------------------
+    if category in {
+        "hotel",
+        "accommodation",
+        "guest_house",
+        "hostel",
+    } or any(
+        word in combined
+        for word in [
+            "hotel",
+            "resort",
+            "hostel",
+            "guest house",
+            "guesthouse",
+            "homestay",
+        ]
+    ):
+        return "accommodation"
+
+    # ---------------------------------------------------------
+    # 3. Emergency / medical
+    # ---------------------------------------------------------
+    if category in {
+        "hospital",
+        "pharmacy",
+        "clinic",
+        "healthcare",
+    } or any(
+        word in combined
+        for word in [
+            "hospital",
+            "pharmacy",
+            "clinic",
+            "medical center",
+            "medical centre",
+        ]
+    ):
+        return "medical"
+
+    # ---------------------------------------------------------
+    # 4. Transport
+    # ---------------------------------------------------------
+    if category in {
+        "transport",
+        "bus",
+        "train",
+        "station",
+        "airport",
+    } or any(
+        word in combined
+        for word in [
+            "bus station",
+            "railway station",
+            "train station",
+            "metro station",
+            "airport",
+            "bus stop",
+        ]
+    ):
+        return "transport"
+
+    # ---------------------------------------------------------
+    # 5. Beaches / coastal attractions
+    # ---------------------------------------------------------
     if any(
         word in combined
         for word in [
@@ -451,11 +545,16 @@ def classify_place(place: Dict[str, Any]) -> str:
             "shore",
             "coast",
             "waterfront",
+            "seafront",
+            "bay",
+            "lagoon",
         ]
     ):
         return "beach"
 
-    # Forts / monuments / heritage
+    # ---------------------------------------------------------
+    # 6. Culture / heritage / historical attractions
+    # ---------------------------------------------------------
     if any(
         word in combined
         for word in [
@@ -469,13 +568,19 @@ def classify_place(place: Dict[str, Any]) -> str:
             "basilica",
             "temple",
             "mosque",
+            "shrine",
             "museum",
             "heritage",
+            "historical",
+            "historic",
+            "ruins",
         ]
     ):
         return "culture"
 
-    # Nature
+    # ---------------------------------------------------------
+    # 7. Nature / outdoor attractions
+    # ---------------------------------------------------------
     if any(
         word in combined
         for word in [
@@ -485,16 +590,22 @@ def classify_place(place: Dict[str, Any]) -> str:
             "lake",
             "hill",
             "mount",
+            "mountain",
             "viewpoint",
             "dam",
             "sanctuary",
             "wildlife",
             "forest",
+            "nature",
+            "reserve",
+            "national park",
         ]
     ):
         return "nature"
 
-    # Shopping
+    # ---------------------------------------------------------
+    # 8. Shopping
+    # ---------------------------------------------------------
     if any(
         word in combined
         for word in [
@@ -502,18 +613,40 @@ def classify_place(place: Dict[str, Any]) -> str:
             "market",
             "bazaar",
             "shopping",
+            "shopping centre",
+            "shopping center",
         ]
     ):
         return "shopping"
 
-    # Restaurants / cafes
-    if category in {
-        "restaurant",
-        "cafe",
-    }:
-        return "food"
+    # ---------------------------------------------------------
+    # 9. Explicitly suspicious / synthetic names
+    # ---------------------------------------------------------
+    suspicious_phrases = [
+        "free entrance",
+        "entrance to",
+        "entry to",
+        "visit ",
+        "beautiful ",
+        "best place",
+        "tourist attraction",
+        "tourist spot",
+        "must visit",
+        "recommended place",
+        "things to do",
+    ]
 
-    return "sightseeing"
+    if any(
+        phrase in name
+        for phrase in suspicious_phrases
+    ):
+        return "unknown"
+
+    # ---------------------------------------------------------
+    # 10. Unknown places should NOT automatically become
+    #     sightseeing.
+    # ---------------------------------------------------------
+    return "unknown"
 
 
 def estimate_place_cost(
