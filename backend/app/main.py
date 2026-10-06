@@ -1136,35 +1136,95 @@ def create_geographic_groups(
     days: int,
 ) -> List[List[Dict[str, Any]]]:
     """
-    Simple geographic clustering without requiring
-    additional paid routing or ML services.
+    Group places geographically so each day focuses on a
+    reasonably compact area.
 
-    Places are first sorted geographically and then
-    distributed into day-sized groups.
+    Uses a simple deterministic geographic clustering approach
+    based on latitude/longitude. No paid routing or ML service
+    is required.
     """
 
     if not places:
         return [[] for _ in range(days)]
 
-    places = sorted(
+    if days <= 1:
+        return [places]
+
+    # If there are fewer places than days, don't create
+    # unnecessary empty clusters.
+    actual_days = min(days, len(places))
+
+    # Start with places spread across the geographic range.
+    sorted_places = sorted(
         places,
         key=lambda place: (
-            place.get("latitude", 0),
-            place.get("longitude", 0),
+            float(place.get("latitude") or 0),
+            float(place.get("longitude") or 0),
         ),
     )
 
-    groups = [
+    groups: List[List[Dict[str, Any]]] = [
         []
-        for _ in range(days)
+        for _ in range(actual_days)
     ]
 
-    for index, place in enumerate(places):
-        group_index = index % days
-        groups[group_index].append(place)
+    # Seed each group with geographically separated places.
+    for index in range(actual_days):
+        position = round(
+            index * (len(sorted_places) - 1)
+            / max(actual_days - 1, 1)
+        )
+
+        groups[index].append(
+            sorted_places[position]
+        )
+
+    seeded_ids = {
+        id(place)
+        for group in groups
+        for place in group
+    }
+
+    remaining = [
+        place
+        for place in sorted_places
+        if id(place) not in seeded_ids
+    ]
+
+    # Assign every remaining place to the geographically
+    # nearest existing cluster.
+    for place in remaining:
+        best_group_index = min(
+            range(actual_days),
+            key=lambda group_index: min(
+                calculate_distance_km(
+                    place["latitude"],
+                    place["longitude"],
+                    existing["latitude"],
+                    existing["longitude"],
+                )
+                for existing in groups[group_index]
+            ),
+        )
+
+        groups[best_group_index].append(place)
+
+    # Keep the requested number of days in the response.
+    while len(groups) < days:
+        groups.append([])
+
+    # Sort each day's places geographically so the following
+    # route optimizer can create a sensible travel sequence.
+    for group in groups:
+        if len(group) > 1:
+            group.sort(
+                key=lambda place: (
+                    float(place.get("latitude") or 0),
+                    float(place.get("longitude") or 0),
+                )
+            )
 
     return groups
-
 
 def improve_group_locality(
     group: List[Dict[str, Any]],
