@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
+import BudgetPlanner from "../components/BudgetPlanner";
 import {
   ArrowLeft,
   CalendarDays,
@@ -1799,7 +1800,14 @@ export default function TripDetails() {
                 null
               }
             />
-
+	<BudgetPlanner
+  budget={trip.budget}
+  days={
+    itineraryDays.length ||
+    Number(preferences.days ?? 1)
+  }
+  travelers={trip.travelers ?? 1}
+/>
             <AccommodationCard
               accommodation={
                 itinerary?.accommodation ??
