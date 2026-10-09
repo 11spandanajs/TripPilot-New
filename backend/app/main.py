@@ -234,7 +234,6 @@ async def geocode_destination(destination: str) -> Dict[str, Any]:
         )
 
         response.raise_for_status()
-
         results = response.json()
 
     if not results:
@@ -243,18 +242,19 @@ async def geocode_destination(destination: str) -> Dict[str, Any]:
             detail=f"Could not find destination: {destination}",
         )
 
-    # Prefer India when the destination is ambiguous.
     india_result = next(
         (
             item
             for item in results
-            if item.get("address", {}).get("country", "").lower() == "india"
+            if item.get("address", {})
+            .get("country", "")
+            .lower()
+            == "india"
         ),
         None,
     )
 
     result = india_result or results[0]
-
     address = result.get("address", {})
 
     return {
@@ -299,13 +299,10 @@ async def get_weather(destination: str):
             url,
             params=params,
         )
-
         response.raise_for_status()
 
     data = response.json()
-
     current = data.get("current", {})
-
     current_code = current.get("weather_code")
 
     return {
@@ -342,16 +339,12 @@ PLACE_CATEGORY_MAP = {
     "public_transport": "transport",
 }
 
-
-# Places that can become sightseeing stops.
-# Restaurants and cafes are handled separately by the meal planner.
 ITINERARY_TYPES = {
     "attraction",
     "museum",
     "park",
     "shopping",
 }
-
 
 EXCLUDED_ITINERARY_TYPES = {
     "hospital",
@@ -368,9 +361,6 @@ def calculate_distance_km(
     lat2: float,
     lon2: float,
 ) -> float:
-    """
-    Haversine distance.
-    """
     earth_radius = 6371.0
 
     lat1_rad = math.radians(lat1)
@@ -395,27 +385,17 @@ def calculate_distance_km(
 
 
 def estimate_travel_minutes(distance_km: float) -> int:
-    """
-    Rough urban/local travel estimate.
-
-    This is intentionally an estimate rather than pretending
-    to be an exact road-routing result.
-    """
     if distance_km <= 1:
         return max(5, round(distance_km * 8))
 
     if distance_km <= 3:
         speed = 20
-
     elif distance_km <= 8:
         speed = 25
-
     else:
         speed = 30
 
     minutes = (distance_km / speed) * 60
-
-    # Add a small buffer.
     minutes *= 1.15
 
     return max(5, round(minutes))
@@ -425,17 +405,17 @@ def clean_place_name(name: str) -> str:
     return " ".join(name.strip().split())
 
 
+# ============================================================
+# STRICT PLACE CLASSIFICATION
+# ============================================================
+
 def classify_place(place: Dict[str, Any]) -> str:
     """
-    Classify a place for TripPilot's travel-manager itinerary.
+    Strict travel classification.
 
-    Important:
-    - Restaurants/cafes are food stops, never sightseeing.
-    - Hotels are accommodation.
-    - Hospitals/pharmacies are emergency services.
-    - Transport locations are transport.
-    - Only genuine attractions/nature/culture/shopping places
-      should be considered for sightseeing.
+    Suspicious/user-generated listings are rejected BEFORE
+    keyword classification so fake/warning listings cannot
+    accidentally become valid attractions.
     """
 
     name = (
@@ -450,9 +430,54 @@ def classify_place(place: Dict[str, Any]) -> str:
 
     combined = f"{name} {category}"
 
-    # ---------------------------------------------------------
-    # 1. Food — NEVER treat restaurants/cafes as sightseeing
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 1. SUSPICIOUS / SYNTHETIC LISTINGS
+    # --------------------------------------------------------
+
+    suspicious_phrases = [
+        "scam",
+        "scamer",
+        "scammers",
+        "scammed",
+        "fraud",
+        "fake",
+        "warning",
+        "beware",
+        "rip off",
+        "rip-off",
+        "ripoff",
+        "avoid this",
+        "do not visit",
+        "don't visit",
+        "200k",
+        "200 k",
+        "200000",
+        "200,000",
+        "100k",
+        "100 k",
+        "100000",
+        "100,000",
+        "free entrance",
+        "entrance to",
+        "entry to",
+        "recommended place",
+        "things to do",
+        "tourist attraction",
+        "tourist spot",
+        "must visit",
+        "best place",
+    ]
+
+    if any(
+        phrase in name
+        for phrase in suspicious_phrases
+    ):
+        return "unknown"
+
+    # --------------------------------------------------------
+    # 2. FOOD
+    # --------------------------------------------------------
+
     if category in {
         "restaurant",
         "cafe",
@@ -472,9 +497,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "food"
 
-    # ---------------------------------------------------------
-    # 2. Accommodation
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 3. ACCOMMODATION
+    # --------------------------------------------------------
+
     if category in {
         "hotel",
         "accommodation",
@@ -493,9 +519,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "accommodation"
 
-    # ---------------------------------------------------------
-    # 3. Emergency / medical
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 4. MEDICAL
+    # --------------------------------------------------------
+
     if category in {
         "hospital",
         "pharmacy",
@@ -513,9 +540,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "medical"
 
-    # ---------------------------------------------------------
-    # 4. Transport
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 5. TRANSPORT
+    # --------------------------------------------------------
+
     if category in {
         "transport",
         "bus",
@@ -535,9 +563,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "transport"
 
-    # ---------------------------------------------------------
-    # 5. Beaches / coastal attractions
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 6. BEACH
+    # --------------------------------------------------------
+
     if any(
         word in combined
         for word in [
@@ -552,9 +581,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "beach"
 
-    # ---------------------------------------------------------
-    # 6. Culture / heritage / historical attractions
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 7. CULTURE / HERITAGE
+    # --------------------------------------------------------
+
     if any(
         word in combined
         for word in [
@@ -578,9 +608,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "culture"
 
-    # ---------------------------------------------------------
-    # 7. Nature / outdoor attractions
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 8. NATURE
+    # --------------------------------------------------------
+
     if any(
         word in combined
         for word in [
@@ -603,9 +634,10 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "nature"
 
-    # ---------------------------------------------------------
-    # 8. Shopping
-    # ---------------------------------------------------------
+    # --------------------------------------------------------
+    # 9. SHOPPING
+    # --------------------------------------------------------
+
     if any(
         word in combined
         for word in [
@@ -619,91 +651,94 @@ def classify_place(place: Dict[str, Any]) -> str:
     ):
         return "shopping"
 
-    # ---------------------------------------------------------
-    # 9. Explicitly suspicious / synthetic names
-    # ---------------------------------------------------------
-    suspicious_phrases = [
-        "free entrance",
-        "entrance to",
-        "entry to",
-        "visit ",
-        "beautiful ",
-        "best place",
-        "tourist attraction",
-        "tourist spot",
-        "must visit",
-        "recommended place",
-        "things to do",
-    ]
-
-    if any(
-        phrase in name
-        for phrase in suspicious_phrases
-    ):
-        return "unknown"
-
-    # ---------------------------------------------------------
-    # 10. Unknown places should NOT automatically become
-    #     sightseeing.
-    # ---------------------------------------------------------
     return "unknown"
 
+
+# ============================================================
+# COST ESTIMATION
+# ============================================================
 
 def estimate_place_cost(
     place: Dict[str, Any],
     travelers: int,
 ) -> Dict[str, Any]:
     """
-    Return transparent attraction pricing information.
-
-    We never invent an entry fee. If TripPilot does not have a reliable
-    price for a specific attraction, the UI says "Price not available"
-    instead of displaying a misleading ₹0.
+    Never invent attraction ticket prices.
     """
 
     category = place.get("travel_category")
-    name = (place.get("name") or "").lower()
+    name = (
+        place.get("name")
+        or ""
+    ).lower()
 
-    # Public places where entry is normally free. This is a planning
-    # classification, not a guarantee about parking/activities.
-    if category in {"beach", "park", "nature"} and not any(
+    if category in {
+        "beach",
+        "park",
+        "nature",
+    } and not any(
         word in name
-        for word in ["museum", "aquarium", "water park", "zoo", "sanctuary"]
+        for word in [
+            "museum",
+            "aquarium",
+            "water park",
+            "zoo",
+            "sanctuary",
+        ]
     ):
         return {
             "estimated_cost": 0,
             "cost_min": 0,
             "cost_max": 0,
             "cost_label": "Free entry",
-            "cost_basis": "Public/open-access location; parking or optional activities may cost extra.",
+            "cost_basis": (
+                "Public/open-access location; "
+                "parking or optional activities may cost extra."
+            ),
             "cost_known": True,
         }
 
-    # Do not manufacture a ticket price for museums, forts, churches,
-    # monuments or private attractions. A curated price source can be
-    # added later without changing the itinerary engine.
     return {
         "estimated_cost": 0,
         "cost_min": None,
         "cost_max": None,
         "cost_label": "Price not available",
-        "cost_basis": "No reliable attraction ticket price is available in the current place data.",
+        "cost_basis": (
+            "No reliable attraction ticket price is "
+            "available in the current place data."
+        ),
         "cost_known": False,
     }
 
 
-# Transparent meal planning ranges. These are planning ranges, not live menu quotes.
+# ============================================================
+# MEAL / ACCOMMODATION PRICING
+# ============================================================
+
 MEAL_RANGES_PER_PERSON = {
-    "low": {"min": 250, "max": 450},
-    "moderate": {"min": 600, "max": 1000},
-    "comfortable": {"min": 1000, "max": 1800},
-    "premium": {"min": 1800, "max": 3500},
-    "unknown": {"min": 600, "max": 1000},
+    "low": {
+        "min": 200,
+        "max": 400,
+    },
+    "moderate": {
+        "min": 350,
+        "max": 700,
+    },
+    "comfortable": {
+        "min": 600,
+        "max": 1200,
+    },
+    "premium": {
+        "min": 1000,
+        "max": 2000,
+    },
+    "unknown": {
+        "min": 350,
+        "max": 700,
+    },
 }
 
 
-# Typical accommodation planning ranges per room/night for two people.
-# These are deliberately shown as ranges, not as a claimed live hotel quote.
 ACCOMMODATION_RANGES = {
     "default": {
         "low": (1800, 3000),
@@ -729,14 +764,30 @@ ACCOMMODATION_RANGES = {
 }
 
 
-def accommodation_range(destination: str, budget_level: str, nights: int, travelers: int) -> Dict[str, Any]:
-    key = destination.strip().lower()
-    ranges = ACCOMMODATION_RANGES.get(key, ACCOMMODATION_RANGES["default"])
-    low, high = ranges.get(budget_level, ranges["unknown"])
+def accommodation_range(
+    destination: str,
+    budget_level: str,
+    nights: int,
+    travelers: int,
+) -> Dict[str, Any]:
 
-    # One room is assumed for up to two travelers; larger groups may need
-    # additional rooms, so the estimate scales by rooms rather than people.
-    rooms = max(1, math.ceil(travelers / 2))
+    key = destination.strip().lower()
+
+    ranges = ACCOMMODATION_RANGES.get(
+        key,
+        ACCOMMODATION_RANGES["default"],
+    )
+
+    low, high = ranges.get(
+        budget_level,
+        ranges["unknown"],
+    )
+
+    rooms = max(
+        1,
+        math.ceil(travelers / 2),
+    )
+
     total_min = low * nights * rooms
     total_max = high * nights * rooms
 
@@ -748,9 +799,16 @@ def accommodation_range(destination: str, budget_level: str, nights: int, travel
         "total_min": total_min,
         "total_max": total_max,
         "label": f"₹{low:,}–₹{high:,} per room/night",
-        "basis": "Typical planning range; actual hotel rates vary by dates, location, season and room type.",
+        "basis": (
+            "Typical planning range; actual hotel rates vary "
+            "by dates, location, season and room type."
+        ),
     }
 
+
+# ============================================================
+# GEOAPIFY PLACES
+# ============================================================
 
 async def fetch_nearby_places(
     latitude: float,
@@ -758,6 +816,7 @@ async def fetch_nearby_places(
     radius: int = 10000,
     limit: int = 100,
 ) -> List[Dict[str, Any]]:
+
     if not GEOAPIFY_API_KEY:
         raise HTTPException(
             status_code=500,
@@ -781,8 +840,12 @@ async def fetch_nearby_places(
 
     params = {
         "categories": categories,
-        "filter": f"circle:{longitude},{latitude},{radius}",
-        "bias": f"proximity:{longitude},{latitude}",
+        "filter": (
+            f"circle:{longitude},{latitude},{radius}"
+        ),
+        "bias": (
+            f"proximity:{longitude},{latitude}"
+        ),
         "limit": limit,
         "apiKey": GEOAPIFY_API_KEY,
     }
@@ -799,12 +862,18 @@ async def fetch_nearby_places(
             except Exception:
                 error_data = response.text
 
-            print("Geoapify places error:", error_data)
+            print(
+                "Geoapify places error:",
+                error_data,
+            )
 
             raise HTTPException(
                 status_code=502,
                 detail={
-                    "message": "Geoapify places service returned an error.",
+                    "message": (
+                        "Geoapify places service "
+                        "returned an error."
+                    ),
                     "geoapify_error": error_data,
                 },
             )
@@ -813,12 +882,25 @@ async def fetch_nearby_places(
 
     places = []
 
-    for feature in data.get("features", []):
-        properties = feature.get("properties", {})
+    for feature in data.get(
+        "features",
+        [],
+    ):
+
+        properties = feature.get(
+            "properties",
+            {},
+        )
 
         coordinates = (
-            feature.get("geometry", {})
-            .get("coordinates", [])
+            feature.get(
+                "geometry",
+                {},
+            )
+            .get(
+                "coordinates",
+                [],
+            )
         )
 
         if len(coordinates) < 2:
@@ -835,12 +917,18 @@ async def fetch_nearby_places(
         place_type = "place"
 
         for category in raw_categories:
+
             if category in PLACE_CATEGORY_MAP:
-                place_type = PLACE_CATEGORY_MAP[category]
+                place_type = PLACE_CATEGORY_MAP[
+                    category
+                ]
                 break
 
-            # Handle hierarchical Geoapify categories.
-            for key, mapped_type in PLACE_CATEGORY_MAP.items():
+            for (
+                key,
+                mapped_type,
+            ) in PLACE_CATEGORY_MAP.items():
+
                 if category.startswith(key):
                     place_type = mapped_type
                     break
@@ -862,12 +950,21 @@ async def fetch_nearby_places(
             "type": place_type,
             "latitude": place_lat,
             "longitude": place_lon,
-            "address": properties.get("formatted"),
+            "address": properties.get(
+                "formatted"
+            ),
             "city": properties.get("city"),
             "country": properties.get("country"),
-            "opening_hours": properties.get("opening_hours"),
-            "phone": properties.get("contact", {}).get("phone"),
-            "website": properties.get("website"),
+            "opening_hours": properties.get(
+                "opening_hours"
+            ),
+            "phone": properties.get(
+                "contact",
+                {},
+            ).get("phone"),
+            "website": properties.get(
+                "website"
+            ),
             "distance_km": round(
                 calculate_distance_km(
                     latitude,
@@ -881,7 +978,6 @@ async def fetch_nearby_places(
 
         places.append(place)
 
-    # Remove duplicate names.
     unique_places = {}
 
     for place in places:
@@ -893,7 +989,9 @@ async def fetch_nearby_places(
         if key not in unique_places:
             unique_places[key] = place
 
-    return list(unique_places.values())
+    return list(
+        unique_places.values()
+    )
 
 
 @app.get("/api/places")
@@ -906,6 +1004,7 @@ async def get_places(
         le=50000,
     ),
 ):
+
     places = await fetch_nearby_places(
         latitude,
         longitude,
@@ -922,16 +1021,26 @@ async def get_places(
 # ============================================================
 # EXPERT TRAVEL MANAGER
 # ============================================================
+
 class ItineraryRequest(BaseModel):
     destination: str
 
-    # Exact coordinates selected by the user
     latitude: Optional[float] = None
     longitude: Optional[float] = None
 
     start_date: Optional[str] = None
-    days: int = Field(default=1, ge=1, le=30)
-    travelers: int = Field(default=1, ge=1, le=100)
+
+    days: int = Field(
+        default=1,
+        ge=1,
+        le=30,
+    )
+
+    travelers: int = Field(
+        default=1,
+        ge=1,
+        le=100,
+    )
 
     budget: Optional[float] = Field(
         default=None,
@@ -945,6 +1054,7 @@ class ItineraryRequest(BaseModel):
     )
 
     starting_location: Optional[str] = None
+
     pace: Optional[str] = "Balanced"
 
 
@@ -1033,10 +1143,12 @@ INTEREST_KEYWORDS = {
 def normalized_interests(
     interests: List[str],
 ) -> List[str]:
+
     return [
         interest.strip().lower()
         for interest in interests
-        if interest and interest.strip()
+        if interest
+        and interest.strip()
     ]
 
 
@@ -1044,6 +1156,7 @@ def interest_score(
     place: Dict[str, Any],
     interests: List[str],
 ) -> int:
+
     if not interests:
         return 1
 
@@ -1057,11 +1170,14 @@ def interest_score(
         or ""
     ).lower()
 
-    combined = f"{name} {place_type}"
+    combined = (
+        f"{name} {place_type}"
+    )
 
     score = 0
 
     for interest in interests:
+
         keywords = INTEREST_KEYWORDS.get(
             interest,
             set(),
@@ -1071,20 +1187,34 @@ def interest_score(
             if keyword in combined:
                 score += 3
 
-    # Basic category preferences.
-    if "beaches" in interests and place_type == "beach":
+    if (
+        "beaches" in interests
+        and place_type == "beach"
+    ):
         score += 8
 
-    if "food" in interests and place_type == "food":
+    if (
+        "food" in interests
+        and place_type == "food"
+    ):
         score += 8
 
-    if "culture" in interests and place_type == "culture":
+    if (
+        "culture" in interests
+        and place_type == "culture"
+    ):
         score += 8
 
-    if "nature" in interests and place_type == "nature":
+    if (
+        "nature" in interests
+        and place_type == "nature"
+    ):
         score += 8
 
-    if "shopping" in interests and place_type == "shopping":
+    if (
+        "shopping" in interests
+        and place_type == "shopping"
+    ):
         score += 8
 
     return score
@@ -1093,6 +1223,7 @@ def interest_score(
 def pace_limits(
     pace: str,
 ) -> Dict[str, int]:
+
     normalized = (
         pace or "Balanced"
     ).lower()
@@ -1119,6 +1250,7 @@ def choose_day_count(
     days: int,
     place_count: int,
 ) -> int:
+
     if days <= 1:
         return 1
 
@@ -1131,48 +1263,59 @@ def choose_day_count(
     return days
 
 
+# ============================================================
+# GEOGRAPHIC GROUPING
+# ============================================================
+
 def create_geographic_groups(
     places: List[Dict[str, Any]],
     days: int,
 ) -> List[List[Dict[str, Any]]]:
-    """
-    Group places geographically so each day focuses on a
-    reasonably compact area.
-
-    Uses a simple deterministic geographic clustering approach
-    based on latitude/longitude. No paid routing or ML service
-    is required.
-    """
 
     if not places:
-        return [[] for _ in range(days)]
+        return [
+            []
+            for _ in range(days)
+        ]
 
     if days <= 1:
         return [places]
 
-    # If there are fewer places than days, don't create
-    # unnecessary empty clusters.
-    actual_days = min(days, len(places))
+    actual_days = min(
+        days,
+        len(places),
+    )
 
-    # Start with places spread across the geographic range.
     sorted_places = sorted(
         places,
         key=lambda place: (
-            float(place.get("latitude") or 0),
-            float(place.get("longitude") or 0),
+            float(
+                place.get("latitude")
+                or 0
+            ),
+            float(
+                place.get("longitude")
+                or 0
+            ),
         ),
     )
 
-    groups: List[List[Dict[str, Any]]] = [
+    groups = [
         []
         for _ in range(actual_days)
     ]
 
-    # Seed each group with geographically separated places.
     for index in range(actual_days):
+
         position = round(
-            index * (len(sorted_places) - 1)
-            / max(actual_days - 1, 1)
+            index
+            * (
+                len(sorted_places) - 1
+            )
+            / max(
+                actual_days - 1,
+                1,
+            )
         )
 
         groups[index].append(
@@ -1188,12 +1331,12 @@ def create_geographic_groups(
     remaining = [
         place
         for place in sorted_places
-        if id(place) not in seeded_ids
+        if id(place)
+        not in seeded_ids
     ]
 
-    # Assign every remaining place to the geographically
-    # nearest existing cluster.
     for place in remaining:
+
         best_group_index = min(
             range(actual_days),
             key=lambda group_index: min(
@@ -1203,38 +1346,40 @@ def create_geographic_groups(
                     existing["latitude"],
                     existing["longitude"],
                 )
-                for existing in groups[group_index]
+                for existing
+                in groups[group_index]
             ),
         )
 
-        groups[best_group_index].append(place)
+        groups[
+            best_group_index
+        ].append(place)
 
-    # Keep the requested number of days in the response.
     while len(groups) < days:
         groups.append([])
 
-    # Sort each day's places geographically so the following
-    # route optimizer can create a sensible travel sequence.
     for group in groups:
+
         if len(group) > 1:
             group.sort(
                 key=lambda place: (
-                    float(place.get("latitude") or 0),
-                    float(place.get("longitude") or 0),
+                    float(
+                        place.get("latitude")
+                        or 0
+                    ),
+                    float(
+                        place.get("longitude")
+                        or 0
+                    ),
                 )
             )
 
     return groups
 
+
 def improve_group_locality(
     group: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
-    """
-    Nearest-neighbour route.
-
-    Starts with the place furthest from the destination
-    only when there is no explicit starting location.
-    """
 
     if len(group) <= 2:
         return group
@@ -1246,6 +1391,7 @@ def improve_group_locality(
     ]
 
     while remaining:
+
         current = route[-1]
 
         nearest_index = min(
@@ -1259,33 +1405,54 @@ def improve_group_locality(
         )
 
         route.append(
-            remaining.pop(nearest_index)
+            remaining.pop(
+                nearest_index
+            )
         )
 
     return route
 
+
+# ============================================================
+# PREPARE SIGHTSEEING PLACES
+# ============================================================
 
 def classify_and_prepare_places(
     places: List[Dict[str, Any]],
     travelers: int,
     interests: List[str],
 ) -> List[Dict[str, Any]]:
+
     prepared = []
 
+    valid_categories = {
+        "beach",
+        "nature",
+        "culture",
+        "shopping",
+    }
+
     for place in places:
-        place_type = place.get("type")
-
-        if place_type in EXCLUDED_ITINERARY_TYPES:
-            continue
-
-        if place_type not in ITINERARY_TYPES:
-            continue
 
         copy = dict(place)
 
-        copy["travel_category"] = classify_place(copy)
+        travel_category = classify_place(
+            copy
+        )
 
-        copy["interest_score"] = interest_score(
+        # IMPORTANT:
+        # Only genuine sightseeing categories
+        # are allowed into the itinerary.
+        if travel_category not in valid_categories:
+            continue
+
+        copy[
+            "travel_category"
+        ] = travel_category
+
+        copy[
+            "interest_score"
+        ] = interest_score(
             copy,
             interests,
         )
@@ -1294,6 +1461,7 @@ def classify_and_prepare_places(
             copy,
             travelers,
         )
+
         copy.update(cost_info)
 
         prepared.append(copy)
@@ -1301,7 +1469,10 @@ def classify_and_prepare_places(
     prepared.sort(
         key=lambda place: (
             -place["interest_score"],
-            place.get("distance_km", 999),
+            place.get(
+                "distance_km",
+                999,
+            ),
         )
     )
 
@@ -1313,6 +1484,7 @@ def choose_budget_level(
     travelers: int,
     days: int,
 ) -> str:
+
     if not budget:
         return "unknown"
 
@@ -1339,6 +1511,7 @@ def filter_for_budget(
     travelers: int,
     days: int,
 ) -> List[Dict[str, Any]]:
+
     if not budget:
         return places
 
@@ -1349,12 +1522,15 @@ def filter_for_budget(
     )
 
     if level == "low":
-        # Prefer free attractions, beaches,
-        # parks and inexpensive sightseeing.
+
         free_places = [
             place
             for place in places
-            if place.get("cost_known") and place["estimated_cost"] <= 50 * travelers
+            if (
+                place.get("cost_known")
+                and place["estimated_cost"]
+                <= 50 * travelers
+            )
         ]
 
         if len(free_places) >= days * 3:
@@ -1372,15 +1548,22 @@ def select_places_for_days(
 ) -> List[List[Dict[str, Any]]]:
 
     if not places:
-        return [[] for _ in range(days)]
+        return [
+            []
+            for _ in range(days)
+        ]
 
-    # Keep the pool manageable.
     max_pool = min(
         len(places),
-        max(20, days * 7),
+        max(
+            20,
+            days * 7,
+        ),
     )
 
-    candidate_places = places[:max_pool]
+    candidate_places = places[
+        :max_pool
+    ]
 
     candidate_places = filter_for_budget(
         candidate_places,
@@ -1397,16 +1580,24 @@ def select_places_for_days(
     result = []
 
     for group in groups:
+
         group = sorted(
             group,
             key=lambda place: (
-                -place["interest_score"],
-                place.get("distance_km", 999),
+                -place[
+                    "interest_score"
+                ],
+                place.get(
+                    "distance_km",
+                    999,
+                ),
             ),
         )
 
         result.append(
-            improve_group_locality(group)
+            improve_group_locality(
+                group
+            )
         )
 
     return result
@@ -1455,15 +1646,27 @@ DAY_PERIODS = [
 ]
 
 
-def format_time(hour: int, minute: int) -> str:
-    suffix = "AM" if hour < 12 else "PM"
+def format_time(
+    hour: int,
+    minute: int,
+) -> str:
+
+    suffix = (
+        "AM"
+        if hour < 12
+        else "PM"
+    )
 
     display_hour = hour % 12
 
     if display_hour == 0:
         display_hour = 12
 
-    return f"{display_hour:02d}:{minute:02d} {suffix}"
+    return (
+        f"{display_hour:02d}:"
+        f"{minute:02d} "
+        f"{suffix}"
+    )
 
 
 def add_minutes(
@@ -1471,6 +1674,7 @@ def add_minutes(
     time_minute: int,
     minutes: int,
 ):
+
     total = (
         time_hour * 60
         + time_minute
@@ -1486,6 +1690,7 @@ def add_minutes(
 def activity_duration(
     place: Dict[str, Any],
 ) -> int:
+
     category = place.get(
         "travel_category",
         "sightseeing",
@@ -1518,10 +1723,10 @@ def activity_item(
 ) -> Dict[str, Any]:
 
     distance = 0
-
     travel_minutes = 0
 
     if previous:
+
         distance = calculate_distance_km(
             previous["latitude"],
             previous["longitude"],
@@ -1533,18 +1738,36 @@ def activity_item(
             distance
         )
 
-    duration = activity_duration(place)
+    duration = activity_duration(
+        place
+    )
 
     return {
         "name": place["name"],
-        "type": place.get("travel_category"),
-        "place_type": place.get("type"),
-        "latitude": place["latitude"],
-        "longitude": place["longitude"],
-        "address": place.get("address"),
-        "opening_hours": place.get("opening_hours"),
-        "website": place.get("website"),
-        "phone": place.get("phone"),
+        "type": place.get(
+            "travel_category"
+        ),
+        "place_type": place.get(
+            "type"
+        ),
+        "latitude": place[
+            "latitude"
+        ],
+        "longitude": place[
+            "longitude"
+        ],
+        "address": place.get(
+            "address"
+        ),
+        "opening_hours": place.get(
+            "opening_hours"
+        ),
+        "website": place.get(
+            "website"
+        ),
+        "phone": place.get(
+            "phone"
+        ),
         "start_time": format_time(
             start_hour,
             start_minute,
@@ -1556,21 +1779,43 @@ def activity_item(
         ),
         "travel_time_minutes": travel_minutes,
         "estimated_cost": round(
-            place.get("estimated_cost", 0),
+            place.get(
+                "estimated_cost",
+                0,
+            ),
             2,
         ),
-        "cost_min": place.get("cost_min"),
-        "cost_max": place.get("cost_max"),
-        "cost_label": place.get("cost_label", "Price not available"),
-        "cost_basis": place.get("cost_basis"),
-        "cost_known": place.get("cost_known", False),
-        "cost_is_estimate": not place.get("cost_known", False),
+        "cost_min": place.get(
+            "cost_min"
+        ),
+        "cost_max": place.get(
+            "cost_max"
+        ),
+        "cost_label": place.get(
+            "cost_label",
+            "Price not available",
+        ),
+        "cost_basis": place.get(
+            "cost_basis"
+        ),
+        "cost_known": place.get(
+            "cost_known",
+            False,
+        ),
+        "cost_is_estimate": not place.get(
+            "cost_known",
+            False,
+        ),
         "reason": (
             "Selected based on your interests, "
             "location, available time and overall trip plan."
         ),
     }
 
+
+# ============================================================
+# MEALS
+# ============================================================
 
 def make_meal_item(
     meal_name: str,
@@ -1581,48 +1826,107 @@ def make_meal_item(
     restaurant: Optional[Dict[str, Any]] = None,
     previous: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    """Create a meal stop with an honest per-person planning range."""
 
     meal_range = MEAL_RANGES_PER_PERSON.get(
         budget_level,
-        MEAL_RANGES_PER_PERSON["unknown"],
+        MEAL_RANGES_PER_PERSON[
+            "unknown"
+        ],
     )
 
-    cost_min = meal_range["min"] * travelers
-    cost_max = meal_range["max"] * travelers
-    midpoint = round((cost_min + cost_max) / 2, 2)
+    cost_min = (
+        meal_range["min"]
+        * travelers
+    )
+
+    cost_max = (
+        meal_range["max"]
+        * travelers
+    )
+
+    midpoint = round(
+        (
+            cost_min
+            + cost_max
+        ) / 2,
+        2,
+    )
 
     distance = 0.0
     travel_minutes = 0
 
-    if restaurant and previous:
+    if (
+        restaurant
+        and previous
+    ):
+
         distance = calculate_distance_km(
             previous["latitude"],
             previous["longitude"],
             restaurant["latitude"],
             restaurant["longitude"],
         )
-        travel_minutes = estimate_travel_minutes(distance)
+
+        travel_minutes = estimate_travel_minutes(
+            distance
+        )
 
     if restaurant:
-        name = restaurant["name"]
+
+        name = restaurant[
+            "name"
+        ]
+
         reason = (
-            f"Suggested as a nearby {meal_name.lower()} option to keep the route practical. "
-            "Food cost is a planning range, not a live menu quote."
+            f"Suggested as a nearby "
+            f"{meal_name.lower()} option "
+            "to keep the route practical. "
+            "Food cost is a planning range, "
+            "not a live menu quote."
         )
-        latitude = restaurant["latitude"]
-        longitude = restaurant["longitude"]
-        address = restaurant.get("address")
-        opening_hours = restaurant.get("opening_hours")
-        website = restaurant.get("website")
-        phone = restaurant.get("phone")
-        place_type = restaurant.get("type", "restaurant")
+
+        latitude = restaurant[
+            "latitude"
+        ]
+
+        longitude = restaurant[
+            "longitude"
+        ]
+
+        address = restaurant.get(
+            "address"
+        )
+
+        opening_hours = restaurant.get(
+            "opening_hours"
+        )
+
+        website = restaurant.get(
+            "website"
+        )
+
+        phone = restaurant.get(
+            "phone"
+        )
+
+        place_type = restaurant.get(
+            "type",
+            "restaurant",
+        )
+
     else:
-        name = f"{meal_name} break"
-        reason = (
-            "A realistic meal break has been included. No suitable nearby restaurant "
-            "was returned by the places service."
+
+        name = (
+            f"{meal_name} break"
         )
+
+        reason = (
+            "A realistic meal break has "
+            "been included. No suitable "
+            "nearby restaurant was returned "
+            "by the places service."
+        )
+
         latitude = None
         longitude = None
         address = None
@@ -1641,15 +1945,31 @@ def make_meal_item(
         "opening_hours": opening_hours,
         "website": website,
         "phone": phone,
-        "start_time": format_time(start_hour, start_minute),
+        "start_time": format_time(
+            start_hour,
+            start_minute,
+        ),
         "duration_minutes": 60,
-        "travel_distance_km": round(distance, 2),
+        "travel_distance_km": round(
+            distance,
+            2,
+        ),
         "travel_time_minutes": travel_minutes,
         "estimated_cost": midpoint,
         "cost_min": cost_min,
         "cost_max": cost_max,
-        "cost_label": f"₹{cost_min:,}–₹{cost_max:,} for {travelers} traveler{'s' if travelers != 1 else ''}",
-        "cost_basis": f"₹{meal_range['min']:,}–₹{meal_range['max']:,} per person for this budget level.",
+        "cost_label": (
+            f"₹{cost_min:,}–"
+            f"₹{cost_max:,} for "
+            f"{travelers} traveler"
+            f"{'s' if travelers != 1 else ''}"
+        ),
+        "cost_basis": (
+            f"₹{meal_range['min']:,}–"
+            f"₹{meal_range['max']:,} "
+            "per person for this "
+            "budget level."
+        ),
         "cost_known": False,
         "cost_is_estimate": True,
         "reason": reason,
@@ -1660,22 +1980,42 @@ def prepare_restaurants(
     places: List[Dict[str, Any]],
     interests: List[str],
 ) -> List[Dict[str, Any]]:
-    """Return nearby restaurants/cafes separately from sightseeing candidates."""
+
     restaurants = []
 
     for place in places:
-        if place.get("type") not in {"restaurant", "cafe"}:
+
+        if place.get("type") not in {
+            "restaurant",
+            "cafe",
+        }:
             continue
 
         copy = dict(place)
-        copy["travel_category"] = "food"
-        copy["interest_score"] = interest_score(copy, interests)
+
+        copy[
+            "travel_category"
+        ] = "food"
+
+        copy[
+            "interest_score"
+        ] = interest_score(
+            copy,
+            interests,
+        )
+
         restaurants.append(copy)
 
     restaurants.sort(
         key=lambda place: (
-            -place.get("interest_score", 0),
-            place.get("distance_km", 999),
+            -place.get(
+                "interest_score",
+                0,
+            ),
+            place.get(
+                "distance_km",
+                999,
+            ),
         )
     )
 
@@ -1687,11 +2027,13 @@ def choose_meal_restaurant(
     previous: Optional[Dict[str, Any]],
     used_names: set,
 ) -> Optional[Dict[str, Any]]:
-    """Pick a nearby unused restaurant so meals do not repeat unnecessarily."""
+
     available = [
         restaurant
         for restaurant in restaurants
-        if restaurant.get("name") not in used_names
+        if restaurant.get(
+            "name"
+        ) not in used_names
     ]
 
     if not available:
@@ -1701,6 +2043,7 @@ def choose_meal_restaurant(
         return None
 
     if previous:
+
         return min(
             available,
             key=lambda restaurant: calculate_distance_km(
@@ -1714,6 +2057,10 @@ def choose_meal_restaurant(
     return available[0]
 
 
+# ============================================================
+# BUILD DAY PLAN
+# ============================================================
+
 def build_day_sections(
     group: List[Dict[str, Any]],
     travelers: int,
@@ -1724,7 +2071,9 @@ def build_day_sections(
     restaurants: List[Dict[str, Any]],
 ) -> Dict[str, Any]:
 
-    limits = pace_limits(pace)
+    limits = pace_limits(
+        pace
+    )
 
     budget_level = choose_budget_level(
         budget,
@@ -1732,270 +2081,427 @@ def build_day_sections(
         days,
     )
 
-    # Limit the number of actual sightseeing places.
-    max_total = limits["total"]
+    selected = group[
+        :limits["total"]
+    ]
 
-    selected = group[:max_total]
-
-    # Prioritize category variety.
     selected = diversify_places(
         selected,
         interests,
     )
 
+    # --------------------------------------------------------
+    # Remove duplicate place names
+    # --------------------------------------------------------
+
+    unique_selected = []
+    seen_names = set()
+
+    for place in selected:
+
+        name = (
+            place.get("name")
+            or ""
+        ).strip().lower()
+
+        if not name:
+            continue
+
+        if name in seen_names:
+            continue
+
+        seen_names.add(name)
+        unique_selected.append(
+            place
+        )
+
+    selected = unique_selected
+
     sections = []
 
     index = 0
-
     previous = None
 
     total_cost = 0
     total_distance = 0
     total_travel_minutes = 0
+
     used_restaurant_names = set()
 
-    for period_index, period in enumerate(DAY_PERIODS):
+    # --------------------------------------------------------
+    # MORNING
+    # --------------------------------------------------------
 
-        items = []
+    morning_items = []
 
-        if period["name"] == "Morning":
+    start_hour = 9
+    start_minute = 0
 
-            start_hour = 9
-            start_minute = 0
+    for _ in range(
+        min(
+            2,
+            len(selected) - index,
+        )
+    ):
 
-            for _ in range(
-                min(
-                    period["max_places"],
-                    len(selected) - index,
-                )
-            ):
-                place = selected[index]
+        place = selected[index]
 
-                item = activity_item(
-                    place,
-                    start_hour,
-                    start_minute,
-                    previous,
-                    travelers,
-                )
+        item = activity_item(
+            place,
+            start_hour,
+            start_minute,
+            previous,
+            travelers,
+        )
 
-                items.append(item)
+        item["reason"] = (
+            "Morning sightseeing selected "
+            "to start the day with a suitable "
+            "nearby attraction."
+        )
 
-                duration = item["duration_minutes"]
-                travel = item["travel_time_minutes"]
+        morning_items.append(item)
 
-                start_hour, start_minute = add_minutes(
-                    start_hour,
-                    start_minute,
-                    duration + travel,
-                )
+        start_hour, start_minute = add_minutes(
+            start_hour,
+            start_minute,
+            item["duration_minutes"]
+            + item["travel_time_minutes"]
+            + 15,
+        )
 
-                previous = place
+        previous = place
 
-                total_cost += item["estimated_cost"]
-                total_distance += item["travel_distance_km"]
-                total_travel_minutes += travel
+        total_cost += item[
+            "estimated_cost"
+        ]
 
-                index += 1
+        total_distance += item[
+            "travel_distance_km"
+        ]
 
-            if items:
-                start_hour, start_minute = add_minutes(
-                    start_hour,
-                    start_minute,
-                    15,
-                )
+        total_travel_minutes += item[
+            "travel_time_minutes"
+        ]
 
-            # If there is only one morning attraction,
-            # don't force another.
+        index += 1
 
-        elif period["name"] == "Afternoon":
+    if morning_items:
+        sections.append(
+            {
+                "period": "Morning",
+                "icon": "🌅",
+                "items": morning_items,
+            }
+        )
 
-            # Lunch first.
-            lunch_restaurant = choose_meal_restaurant(
-                restaurants,
-                previous,
-                used_restaurant_names,
+    # --------------------------------------------------------
+    # AFTERNOON
+    # --------------------------------------------------------
+
+    afternoon_items = []
+
+    lunch_restaurant = choose_meal_restaurant(
+        restaurants,
+        previous,
+        used_restaurant_names,
+    )
+
+    lunch = make_meal_item(
+        "Lunch",
+        13,
+        0,
+        travelers,
+        budget_level,
+        lunch_restaurant,
+        previous,
+    )
+
+    if lunch_restaurant:
+        used_restaurant_names.add(
+            lunch_restaurant.get(
+                "name"
             )
+        )
 
-            lunch = make_meal_item(
-                "Lunch",
-                13,
-                0,
-                travelers,
-                budget_level,
-                lunch_restaurant,
-                previous,
+    afternoon_items.append(
+        lunch
+    )
+
+    total_cost += lunch[
+        "estimated_cost"
+    ]
+
+    start_hour = 14
+    start_minute = 0
+
+    for _ in range(
+        min(
+            2,
+            len(selected) - index,
+        )
+    ):
+
+        place = selected[index]
+
+        item = activity_item(
+            place,
+            start_hour,
+            start_minute,
+            previous,
+            travelers,
+        )
+
+        item["reason"] = (
+            "Afternoon attraction selected "
+            "to keep travel within the same "
+            "geographic area."
+        )
+
+        afternoon_items.append(
+            item
+        )
+
+        start_hour, start_minute = add_minutes(
+            start_hour,
+            start_minute,
+            item["duration_minutes"]
+            + item["travel_time_minutes"]
+            + 15,
+        )
+
+        previous = place
+
+        total_cost += item[
+            "estimated_cost"
+        ]
+
+        total_distance += item[
+            "travel_distance_km"
+        ]
+
+        total_travel_minutes += item[
+            "travel_time_minutes"
+        ]
+
+        index += 1
+
+    sections.append(
+        {
+            "period": "Afternoon",
+            "icon": "☀️",
+            "items": afternoon_items,
+        }
+    )
+
+    # --------------------------------------------------------
+    # EVENING
+    # --------------------------------------------------------
+
+    evening_items = []
+
+    start_hour = 17
+    start_minute = 0
+
+    for _ in range(
+        min(
+            1,
+            len(selected) - index,
+        )
+    ):
+
+        place = selected[index]
+
+        item = activity_item(
+            place,
+            start_hour,
+            start_minute,
+            previous,
+            travelers,
+        )
+
+        item["reason"] = (
+            "Evening stop selected to continue "
+            "the route without unnecessary "
+            "backtracking."
+        )
+
+        evening_items.append(
+            item
+        )
+
+        previous = place
+
+        total_cost += item[
+            "estimated_cost"
+        ]
+
+        total_distance += item[
+            "travel_distance_km"
+        ]
+
+        total_travel_minutes += item[
+            "travel_time_minutes"
+        ]
+
+        index += 1
+
+    if evening_items:
+        sections.append(
+            {
+                "period": "Evening",
+                "icon": "🌆",
+                "items": evening_items,
+            }
+        )
+
+    # --------------------------------------------------------
+    # SUNSET
+    # --------------------------------------------------------
+    # IMPORTANT:
+    # Select an unused scenic place.
+    # This prevents the same place appearing twice.
+
+    used_place_names = {
+        (
+            item.get("name")
+            or ""
+        ).strip().lower()
+        for section in sections
+        for item in section.get(
+            "items",
+            [],
+        )
+        if item.get("type") != "meal"
+    }
+
+    sunset_candidates = [
+        place
+        for place in selected
+        if (
+            place.get(
+                "travel_category"
             )
+            in {
+                "beach",
+                "nature",
+                "culture",
+            }
+        )
+        and (
+            place.get("name")
+            or ""
+        ).strip().lower()
+        not in used_place_names
+    ]
 
-            if lunch_restaurant:
-                used_restaurant_names.add(
-                    lunch_restaurant.get("name")
-                )
+    # Prefer beaches for sunset,
+    # then nature, then culture.
 
-            items.append(lunch)
+    sunset_candidates.sort(
+        key=lambda place: (
+            0
+            if place.get(
+                "travel_category"
+            ) == "beach"
+            else 1
+            if place.get(
+                "travel_category"
+            ) == "nature"
+            else 2
+        )
+    )
 
-            total_cost += lunch["estimated_cost"]
+    sunset_place = (
+        sunset_candidates[0]
+        if sunset_candidates
+        else None
+    )
 
-            start_hour = 14
-            start_minute = 0
+    if sunset_place:
 
-            for _ in range(
-                min(
-                    period["max_places"],
-                    len(selected) - index,
-                )
-            ):
-                place = selected[index]
+        item = activity_item(
+            sunset_place,
+            18,
+            30,
+            previous,
+            travelers,
+        )
 
-                item = activity_item(
-                    place,
-                    start_hour,
-                    start_minute,
-                    previous,
-                    travelers,
-                )
+        item["reason"] = (
+            "Recommended sunset location based "
+            "on its scenic beach, nature or "
+            "heritage character."
+        )
 
-                items.append(item)
+        sections.append(
+            {
+                "period": "Sunset",
+                "icon": "🌅",
+                "items": [item],
+            }
+        )
 
-                duration = item["duration_minutes"]
-                travel = item["travel_time_minutes"]
+        total_distance += item[
+            "travel_distance_km"
+        ]
 
-                start_hour, start_minute = add_minutes(
-                    start_hour,
-                    start_minute,
-                    duration + travel,
-                )
+        total_travel_minutes += item[
+            "travel_time_minutes"
+        ]
 
-                previous = place
+    # --------------------------------------------------------
+    # NIGHT / DINNER
+    # --------------------------------------------------------
 
-                total_cost += item["estimated_cost"]
-                total_distance += item["travel_distance_km"]
-                total_travel_minutes += travel
+    dinner_restaurant = choose_meal_restaurant(
+        restaurants,
+        previous,
+        used_restaurant_names,
+    )
 
-                index += 1
+    dinner = make_meal_item(
+        "Dinner",
+        20,
+        0,
+        travelers,
+        budget_level,
+        dinner_restaurant,
+        previous,
+    )
 
-        elif period["name"] == "Evening":
-
-            start_hour = 17
-            start_minute = 0
-
-            for _ in range(
-                min(
-                    period["max_places"],
-                    len(selected) - index,
-                )
-            ):
-                place = selected[index]
-
-                item = activity_item(
-                    place,
-                    start_hour,
-                    start_minute,
-                    previous,
-                    travelers,
-                )
-
-                items.append(item)
-
-                duration = item["duration_minutes"]
-                travel = item["travel_time_minutes"]
-
-                start_hour, start_minute = add_minutes(
-                    start_hour,
-                    start_minute,
-                    duration + travel,
-                )
-
-                previous = place
-
-                total_cost += item["estimated_cost"]
-                total_distance += item["travel_distance_km"]
-                total_travel_minutes += travel
-
-                index += 1
-
-        elif period["name"] == "Sunset":
-
-            # Prefer a scenic location from the already selected
-            # places. Otherwise don't invent a place.
-            sunset_place = next(
-                (
-                    place
-                    for place in selected
-                    if place.get("travel_category")
-                    in {
-                        "beach",
-                        "nature",
-                        "culture",
-                    }
-                ),
-                None,
+    if dinner_restaurant:
+        used_restaurant_names.add(
+            dinner_restaurant.get(
+                "name"
             )
+        )
 
-            if sunset_place:
-                item = activity_item(
-                    sunset_place,
-                    18,
-                    30,
-                    previous,
-                    travelers,
-                )
+    sections.append(
+        {
+            "period": "Night",
+            "icon": "🌙",
+            "items": [dinner],
+        }
+    )
 
-                item["reason"] = (
-                    "Scheduled around the evening/sunset period "
-                    "because this type of location is suitable "
-                    "for scenic views and photography."
-                )
-
-                items.append(item)
-
-                total_distance += item["travel_distance_km"]
-                total_travel_minutes += item["travel_time_minutes"]
-
-        elif period["name"] == "Night":
-
-            dinner_restaurant = choose_meal_restaurant(
-                restaurants,
-                previous,
-                used_restaurant_names,
-            )
-
-            dinner = make_meal_item(
-                "Dinner",
-                20,
-                0,
-                travelers,
-                budget_level,
-                dinner_restaurant,
-                previous,
-            )
-
-            if dinner_restaurant:
-                used_restaurant_names.add(
-                    dinner_restaurant.get("name")
-                )
-
-            items.append(dinner)
-
-            total_cost += dinner["estimated_cost"]
-
-        if items:
-            sections.append(
-                {
-                    "period": period["name"],
-                    "icon": period["icon"],
-                    "items": items,
-                }
-            )
+    total_cost += dinner[
+        "estimated_cost"
+    ]
 
     return {
         "sections": sections,
-        "total_cost": round(total_cost, 2),
+        "total_cost": round(
+            total_cost,
+            2,
+        ),
         "total_distance_km": round(
             total_distance,
             2,
         ),
-        "total_travel_minutes": total_travel_minutes,
+        "total_travel_minutes": (
+            total_travel_minutes
+        ),
     }
 
 
@@ -2008,22 +2514,24 @@ def diversify_places(
         return places
 
     result = []
-
     used_categories = set()
 
-    # First pass: one place from each useful category.
     for place in places:
+
         category = place.get(
             "travel_category",
             "sightseeing",
         )
 
         if category not in used_categories:
-            result.append(place)
-            used_categories.add(category)
 
-    # Second pass: fill remaining slots.
+            result.append(place)
+            used_categories.add(
+                category
+            )
+
     for place in places:
+
         if place not in result:
             result.append(place)
 
@@ -2033,10 +2541,15 @@ def diversify_places(
 def flatten_sections(
     sections: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
+
     activities = []
 
     for section in sections:
-        for item in section["items"]:
+
+        for item in section[
+            "items"
+        ]:
+
             activities.append(item)
 
     return activities
@@ -2049,29 +2562,53 @@ def make_day_title(
 ) -> str:
 
     categories = [
-        place.get("travel_category")
+        place.get(
+            "travel_category"
+        )
         for place in places
     ]
 
     name = destination.strip()
 
     if "beach" in categories:
-        if "culture" in categories:
-            return f"{name} — Coast + Culture"
 
-        return f"{name} — Beaches & Coastal Explore"
+        if "culture" in categories:
+            return (
+                f"{name} — "
+                "Coast + Culture"
+            )
+
+        return (
+            f"{name} — "
+            "Beaches & Coastal Explore"
+        )
 
     if "culture" in categories:
-        return f"{name} — Heritage & Culture"
+        return (
+            f"{name} — "
+            "Heritage & Culture"
+        )
 
     if "nature" in categories:
-        return f"{name} — Nature & Scenic Explore"
+        return (
+            f"{name} — "
+            "Nature & Scenic Explore"
+        )
 
     if "shopping" in categories:
-        return f"{name} — Explore & Shopping"
+        return (
+            f"{name} — "
+            "Explore & Shopping"
+        )
 
-    return f"{name} — Explore"
+    return (
+        f"{name} — Explore"
+    )
 
+
+# ============================================================
+# BUDGET SUMMARY
+# ============================================================
 
 def calculate_budget_summary(
     itinerary_days: List[Dict[str, Any]],
@@ -2079,80 +2616,196 @@ def calculate_budget_summary(
     accommodation: Dict[str, Any],
     travelers: int,
 ) -> Dict[str, Any]:
-    """Create a transparent budget view without pretending unknown prices are exact."""
 
     meal_min = 0
     meal_max = 0
+
     known_attraction_total = 0
     unknown_cost_items = 0
 
     for day in itinerary_days:
-        for item in day.get("activities", []):
+
+        for item in day.get(
+            "activities",
+            [],
+        ):
+
             if item.get("type") == "meal":
-                meal_min += item.get("cost_min") or 0
-                meal_max += item.get("cost_max") or 0
-            elif item.get("cost_known"):
-                known_attraction_total += item.get("estimated_cost") or 0
+
+                meal_min += (
+                    item.get(
+                        "cost_min"
+                    )
+                    or 0
+                )
+
+                meal_max += (
+                    item.get(
+                        "cost_max"
+                    )
+                    or 0
+                )
+
+            elif item.get(
+                "cost_known"
+            ):
+
+                known_attraction_total += (
+                    item.get(
+                        "estimated_cost"
+                    )
+                    or 0
+                )
+
             else:
+
                 unknown_cost_items += 1
 
-    accommodation_min = accommodation.get("total_min", 0)
-    accommodation_max = accommodation.get("total_max", 0)
+    accommodation_min = (
+        accommodation.get(
+            "total_min",
+            0,
+        )
+    )
 
-    known_min = meal_min + known_attraction_total + accommodation_min
-    known_max = meal_max + known_attraction_total + accommodation_max
+    accommodation_max = (
+        accommodation.get(
+            "total_max",
+            0,
+        )
+    )
+
+    known_min = (
+        meal_min
+        + known_attraction_total
+        + accommodation_min
+    )
+
+    known_max = (
+        meal_max
+        + known_attraction_total
+        + accommodation_max
+    )
 
     if total_budget is None:
+
         return {
             "budget_provided": False,
             "total_budget": None,
-            "estimated_total": round((known_min + known_max) / 2, 2),
-            "estimated_min": round(known_min, 2),
-            "estimated_max": round(known_max, 2),
+            "estimated_total": round(
+                (
+                    known_min
+                    + known_max
+                ) / 2,
+                2,
+            ),
+            "estimated_min": round(
+                known_min,
+                2,
+            ),
+            "estimated_max": round(
+                known_max,
+                2,
+            ),
             "remaining": None,
             "within_budget": None,
-            "costs_complete": unknown_cost_items == 0,
-            "unknown_cost_items": unknown_cost_items,
+            "costs_complete": (
+                unknown_cost_items == 0
+            ),
+            "unknown_cost_items": (
+                unknown_cost_items
+            ),
             "message": (
-                "Your itinerary uses transparent price ranges. Some attraction ticket prices "
-                "are not available, so they are not counted as ₹0."
+                "Your itinerary uses transparent "
+                "price ranges. Some attraction "
+                "ticket prices are not available, "
+                "so they are not counted as ₹0."
             ),
         }
 
-    remaining_min = round(total_budget - known_min, 2)
-    remaining_max = round(total_budget - known_max, 2)
+    remaining_min = round(
+        total_budget - known_min,
+        2,
+    )
+
+    remaining_max = round(
+        total_budget - known_max,
+        2,
+    )
 
     if known_max <= total_budget:
+
         message = (
-            "The current accommodation + meal + known-entry estimate fits within your budget. "
-            "Some attraction prices are still unpriced and should be checked before booking."
+            "The current accommodation + "
+            "meal + known-entry estimate fits "
+            "within your budget. Some attraction "
+            "prices are still unpriced and should "
+            "be checked before booking."
         )
+
     elif known_min <= total_budget < known_max:
+
         message = (
-            "Your budget falls inside the estimated cost range. Actual spending will depend on "
-            "hotel and meal choices, dates and attraction fees."
+            "Your budget falls inside the "
+            "estimated cost range. Actual "
+            "spending will depend on hotel "
+            "and meal choices, dates and "
+            "attraction fees."
         )
+
     else:
+
         message = (
-            "The current estimated range is above your budget. TripPilot should reduce hotel, "
-            "meal or paid-activity choices before finalizing the plan."
+            "The current estimated range is "
+            "above your budget. TripPilot "
+            "should reduce hotel, meal or "
+            "paid-activity choices before "
+            "finalizing the plan."
         )
 
     return {
         "budget_provided": True,
         "total_budget": total_budget,
-        "estimated_total": round((known_min + known_max) / 2, 2),
-        "estimated_min": round(known_min, 2),
-        "estimated_max": round(known_max, 2),
+        "estimated_total": round(
+            (
+                known_min
+                + known_max
+            ) / 2,
+            2,
+        ),
+        "estimated_min": round(
+            known_min,
+            2,
+        ),
+        "estimated_max": round(
+            known_max,
+            2,
+        ),
         "remaining_min": remaining_min,
         "remaining_max": remaining_max,
-        "remaining": round((remaining_min + remaining_max) / 2, 2),
-        "within_budget": known_max <= total_budget,
-        "costs_complete": unknown_cost_items == 0,
-        "unknown_cost_items": unknown_cost_items,
+        "remaining": round(
+            (
+                remaining_min
+                + remaining_max
+            ) / 2,
+            2,
+        ),
+        "within_budget": (
+            known_max <= total_budget
+        ),
+        "costs_complete": (
+            unknown_cost_items == 0
+        ),
+        "unknown_cost_items": (
+            unknown_cost_items
+        ),
         "message": message,
     }
 
+
+# ============================================================
+# ITINERARY GENERATION
+# ============================================================
 
 @app.post("/api/itinerary/generate")
 async def generate_itinerary(
@@ -2164,12 +2817,13 @@ async def generate_itinerary(
     # --------------------------------------------------------
 
     if not request.destination.strip():
+
         raise HTTPException(
             status_code=400,
             detail="Destination is required.",
         )
 
-       # --------------------------------------------------------
+    # --------------------------------------------------------
     # 2. Resolve destination
     # --------------------------------------------------------
 
@@ -2177,17 +2831,26 @@ async def generate_itinerary(
         request.latitude is not None
         and request.longitude is not None
     ):
+
         latitude = request.latitude
         longitude = request.longitude
+
     else:
+
         location = await geocode_destination(
             request.destination
         )
-        latitude = location["latitude"]
-        longitude = location["longitude"]
+
+        latitude = location[
+            "latitude"
+        ]
+
+        longitude = location[
+            "longitude"
+        ]
 
     # --------------------------------------------------------
-    # 3. Fetch a LARGE place pool
+    # 3. Fetch places
     # --------------------------------------------------------
 
     places = await fetch_nearby_places(
@@ -2198,17 +2861,19 @@ async def generate_itinerary(
     )
 
     # --------------------------------------------------------
-    # 4. Prepare travel candidates
+    # 4. Prepare candidates
     # --------------------------------------------------------
 
     interests = normalized_interests(
         request.interests
     )
 
-    prepared_places = classify_and_prepare_places(
-        places,
-        request.travelers,
-        interests,
+    prepared_places = (
+        classify_and_prepare_places(
+            places,
+            request.travelers,
+            interests,
+        )
     )
 
     restaurants = prepare_restaurants(
@@ -2217,13 +2882,18 @@ async def generate_itinerary(
     )
 
     # --------------------------------------------------------
-    # 5. Sort intelligently
+    # 5. Sort
     # --------------------------------------------------------
 
     prepared_places.sort(
         key=lambda place: (
-            -place["interest_score"],
-            place.get("distance_km", 999),
+            -place[
+                "interest_score"
+            ],
+            place.get(
+                "distance_km",
+                999,
+            ),
         )
     )
 
@@ -2245,7 +2915,7 @@ async def generate_itinerary(
     )
 
     # --------------------------------------------------------
-    # 7. Build structured days
+    # 7. Build days
     # --------------------------------------------------------
 
     itinerary_days = []
@@ -2265,7 +2935,9 @@ async def generate_itinerary(
             restaurants,
         )
 
-        sections = day_plan["sections"]
+        sections = day_plan[
+            "sections"
+        ]
 
         activities = flatten_sections(
             sections
@@ -2284,28 +2956,39 @@ async def generate_itinerary(
                 "activity_count": len(
                     activities
                 ),
-                "estimated_cost": day_plan[
-                    "total_cost"
-                ],
-                "estimated_distance_km": day_plan[
-                    "total_distance_km"
-                ],
-                "estimated_travel_minutes": day_plan[
-                    "total_travel_minutes"
-                ],
+                "estimated_cost": (
+                    day_plan[
+                        "total_cost"
+                    ]
+                ),
+                "estimated_distance_km": (
+                    day_plan[
+                        "total_distance_km"
+                    ]
+                ),
+                "estimated_travel_minutes": (
+                    day_plan[
+                        "total_travel_minutes"
+                    ]
+                ),
             }
         )
 
     # --------------------------------------------------------
-    # 8. Accommodation planning
+    # 8. Accommodation
     # --------------------------------------------------------
 
-    nights = max(0, actual_days - 1)
+    nights = max(
+        0,
+        actual_days - 1,
+    )
+
     budget_level = choose_budget_level(
         request.budget,
         request.travelers,
         actual_days,
     )
+
     accommodation = accommodation_range(
         request.destination,
         budget_level,
@@ -2314,28 +2997,33 @@ async def generate_itinerary(
     )
 
     # --------------------------------------------------------
-    # 9. Budget analysis
+    # 9. Budget summary
     # --------------------------------------------------------
 
-    budget_summary = calculate_budget_summary(
-        itinerary_days,
-        request.budget,
-        accommodation,
-        request.travelers,
+    budget_summary = (
+        calculate_budget_summary(
+            itinerary_days,
+            request.budget,
+            accommodation,
+            request.travelers,
+        )
     )
 
     # --------------------------------------------------------
-    # 10. Return expert travel-manager result
+    # 10. Final response
     # --------------------------------------------------------
 
     return {
         "success": True,
-        "planner": "TripPilot Expert Travel Manager",
+        "planner": (
+            "TripPilot Expert "
+            "Travel Manager"
+        ),
         "destination": request.destination,
         "resolved_location": {
-    "latitude": latitude,
-    "longitude": longitude,
-},
+            "latitude": latitude,
+            "longitude": longitude,
+        },
         "days_requested": request.days,
         "days_planned": actual_days,
         "travelers": request.travelers,
@@ -2353,6 +3041,9 @@ async def generate_itinerary(
             "Attraction tickets are never displayed as ₹0 unless the location is classified as free/open access.",
             "When a reliable attraction ticket price is unavailable, TripPilot shows 'Price not available' and does not count it as free.",
             "Hospitals, pharmacies, hotels and transport locations are excluded from sightseeing recommendations.",
+            "Restaurants and cafes are used only for meal stops.",
+            "Suspicious or warning-style listings are excluded before itinerary classification.",
+            "The same sightseeing place is not intentionally reused as the sunset stop.",
             "Travel times are estimates and may vary with real traffic.",
             "The itinerary prioritizes realistic travel rather than maximizing the number of attractions.",
         ],

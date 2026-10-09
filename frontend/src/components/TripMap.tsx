@@ -1,3 +1,4 @@
+
 import { useEffect, useMemo, useState } from "react";
 import {
   MapContainer,
@@ -7,18 +8,21 @@ import {
   useMap,
 } from "react-leaflet";
 import L from "leaflet";
+import { Heart, MapPin } from "lucide-react";
 
-type Place = {
-  id: number;
+export type Place = {
+  id: string | number;
   name: string;
-  type: string;
+  type?: string;
   latitude: number;
   longitude: number;
-  address?: string;
-  city?: string;
-  opening_hours?: string;
-  phone?: string;
-  website?: string;
+  address?: string | null;
+  city?: string | null;
+  country?: string | null;
+  opening_hours?: string | null;
+  phone?: string | null;
+  website?: string | null;
+  distance_km?: number | null;
 };
 
 type TripMapProps = {
@@ -26,7 +30,41 @@ type TripMapProps = {
   longitude: number;
   destination: string;
   country?: string;
+  favoriteIds?: string[];
+  onToggleFavorite?: (place: Place) => void;
 };
+
+function makeIcon(emoji: string, selected = false) {
+  return L.divIcon({
+    className: "",
+    html: `<div style="
+      width:38px;height:38px;border-radius:50%;
+      display:flex;align-items:center;justify-content:center;
+      background:${selected ? "#dbeafe" : "#ffffff"};
+      border:2px solid ${selected ? "#2563eb" : "#e2e8f0"};
+      box-shadow:0 3px 10px rgba(15,23,42,.18);
+      font-size:19px;
+    ">${emoji}</div>`,
+    iconSize: [38, 38],
+    iconAnchor: [19, 19],
+    popupAnchor: [0, -18],
+  });
+}
+
+function getPlaceEmoji(type?: string) {
+  const value = (type ?? "").toLowerCase();
+
+  if (value.includes("restaurant") || value.includes("food")) return "🍽️";
+  if (value.includes("cafe")) return "☕";
+  if (value.includes("hotel") || value.includes("accommodation")) return "🏨";
+  if (value.includes("hospital")) return "🏥";
+  if (value.includes("pharmacy")) return "💊";
+  if (value.includes("shopping")) return "🛍️";
+  if (value.includes("park")) return "🌳";
+  if (value.includes("transport") || value.includes("bus")) return "🚌";
+  if (value.includes("museum")) return "🏛️";
+  return "📍";
+}
 
 function MapViewUpdater({
   latitude,
@@ -38,113 +76,31 @@ function MapViewUpdater({
   const map = useMap();
 
   useEffect(() => {
-    map.setView([latitude, longitude], 10);
+    map.setView([latitude, longitude], 13);
   }, [map, latitude, longitude]);
 
   return null;
 }
-
-function getPlaceIcon(type: string) {
-  let emoji = "📍";
-
-  if (
-    [
-      "attraction",
-      "museum",
-      "gallery",
-      "viewpoint",
-      "zoo",
-      "theme_park",
-      "aquarium",
-    ].includes(type)
-  ) {
-    emoji = "🏛️";
-  } else if (["restaurant", "cafe"].includes(type)) {
-    emoji = "🍽️";
-  } else if (
-    ["hotel", "hostel", "guest_house"].includes(type)
-  ) {
-    emoji = "🏨";
-  } else if (
-    ["hospital", "clinic", "pharmacy"].includes(type)
-  ) {
-    emoji = "🏥";
-  } else if (
-    ["mall", "supermarket", "department_store"].includes(type)
-  ) {
-    emoji = "🛍️";
-  } else if (["park", "garden"].includes(type)) {
-    emoji = "🌳";
-  } else if (type === "bus_stop") {
-    emoji = "🚌";
-  } else if (type === "station") {
-    emoji = "🚆";
-  }
-
-  return L.divIcon({
-    html: `
-      <div
-        style="
-          width: 34px;
-          height: 34px;
-          display: flex;
-          align-items: center;
-          justify-content: center;
-          font-size: 25px;
-          line-height: 1;
-          background: white;
-          border-radius: 50%;
-          border: 2px solid #e2e8f0;
-          box-shadow: 0 3px 8px rgba(0, 0, 0, 0.18);
-        "
-      >
-        ${emoji}
-      </div>
-    `,
-    className: "",
-    iconSize: [34, 34],
-    iconAnchor: [17, 17],
-    popupAnchor: [0, -17],
-  });
-}
-
-const destinationIcon = L.divIcon({
-  html: `
-    <div
-      style="
-        width: 42px;
-        height: 42px;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        font-size: 36px;
-        line-height: 1;
-        filter: drop-shadow(
-          0 3px 3px rgba(0, 0, 0, 0.25)
-        );
-      "
-    >
-      📍
-    </div>
-  `,
-  className: "",
-  iconSize: [42, 42],
-  iconAnchor: [21, 42],
-  popupAnchor: [0, -42],
-});
 
 export default function TripMap({
   latitude,
   longitude,
   destination,
   country,
+  favoriteIds = [],
+  onToggleFavorite,
 }: TripMapProps) {
   const [places, setPlaces] = useState<Place[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
 
+  const destinationIcon = useMemo(
+    () => makeIcon("📍", true),
+    [],
+  );
+
   useEffect(() => {
-    let cancelled = false;
+    const controller = new AbortController();
 
     async function loadPlaces() {
       setLoading(true);
@@ -153,207 +109,167 @@ export default function TripMap({
       try {
         const response = await fetch(
           `http://127.0.0.1:8000/api/places?latitude=${latitude}&longitude=${longitude}&radius=5000`,
+          { signal: controller.signal },
         );
 
         if (!response.ok) {
-          throw new Error(
-            "Unable to load nearby places.",
-          );
+          throw new Error(`Places request failed (${response.status}).`);
         }
 
         const data = await response.json();
+        const results: Place[] = Array.isArray(data.places)
+          ? data.places
+          : [];
 
-        if (!cancelled) {
-          setPlaces(data.places ?? []);
-        }
-      } catch (error) {
-        console.error(
-          "Places loading error:",
-          error,
+        setPlaces(
+          results.filter(
+            (place) =>
+              typeof place.latitude === "number" &&
+              typeof place.longitude === "number",
+          ),
         );
+      } catch (err) {
+        if (err instanceof Error && err.name === "AbortError") return;
 
-        if (!cancelled) {
-          setError(
-            "Nearby places could not be loaded.",
-          );
-        }
+        console.error("Places loading error:", err);
+        setError("Places could not be loaded. Please try again later.");
       } finally {
-        if (!cancelled) {
+        if (!controller.signal.aborted) {
           setLoading(false);
         }
       }
     }
 
-    loadPlaces();
+    void loadPlaces();
 
-    return () => {
-      cancelled = true;
-    };
+    return () => controller.abort();
   }, [latitude, longitude]);
 
-  const placeMarkers = useMemo(() => {
-    return places.filter(
-      (place) =>
-        Number.isFinite(place.latitude) &&
-        Number.isFinite(place.longitude),
-    );
-  }, [places]);
-
   return (
-    <div className="overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-sm">
-      <div className="relative">
-        <MapContainer
-          center={[latitude, longitude]}
-          zoom={10}
-          scrollWheelZoom={true}
-          className="h-[520px] w-full"
+    <div className="relative overflow-hidden rounded-2xl">
+      <MapContainer
+        center={[latitude, longitude]}
+        zoom={13}
+        scrollWheelZoom
+        style={{ height: "520px", width: "100%" }}
+      >
+        <MapViewUpdater latitude={latitude} longitude={longitude} />
+
+        <TileLayer
+          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+        />
+
+        <Marker
+          position={[latitude, longitude]}
+          icon={destinationIcon}
         >
-          <MapViewUpdater
-            latitude={latitude}
-            longitude={longitude}
-          />
+          <Popup>
+            <strong>{destination}</strong>
+            {country ? <div>{country}</div> : null}
+            <div>Your selected destination</div>
+          </Popup>
+        </Marker>
 
-          <TileLayer
-            attribution='&copy; <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noreferrer">OpenStreetMap</a> contributors'
-            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          />
+        {places.map((place) => {
+          const isFavorite = favoriteIds.includes(String(place.id));
 
-          <Marker
-            position={[latitude, longitude]}
-            icon={destinationIcon}
-          >
-            <Popup>
-              <div className="min-w-[180px]">
-                <p className="font-semibold text-slate-900">
-                  {destination}
-                </p>
-
-                {country && (
-                  <p className="text-sm text-slate-500">
-                    {country}
-                  </p>
-                )}
-
-                <p className="mt-1 text-xs text-slate-400">
-                  Your destination
-                </p>
-              </div>
-            </Popup>
-          </Marker>
-
-          {placeMarkers.map((place) => (
+          return (
             <Marker
-              key={`${place.type}-${place.id}`}
-              position={[
-                place.latitude,
-                place.longitude,
-              ]}
-              icon={getPlaceIcon(place.type)}
+              key={String(place.id)}
+              position={[place.latitude, place.longitude]}
+              icon={makeIcon(getPlaceEmoji(place.type), isFavorite)}
             >
               <Popup>
-                <div className="min-w-[220px]">
-                  <p className="font-semibold text-slate-900">
-                    {place.name}
-                  </p>
+                <div style={{ minWidth: "180px", maxWidth: "240px" }}>
+                  <strong>{place.name}</strong>
 
-                  <p className="mt-1 text-xs capitalize text-sky-600">
-                    {place.type.replaceAll("_", " ")}
-                  </p>
-
-                  {place.address && (
-                    <p className="mt-2 text-sm text-slate-500">
-                      {place.address}
-                    </p>
+                  {place.type && (
+                    <div style={{ marginTop: "4px", color: "#64748b" }}>
+                      {place.type}
+                    </div>
                   )}
 
-                  {place.city && (
-                    <p className="text-sm text-slate-500">
-                      {place.city}
-                    </p>
+                  {place.address && (
+                    <div style={{ marginTop: "6px" }}>
+                      {place.address}
+                    </div>
                   )}
 
                   {place.opening_hours && (
-                    <p className="mt-2 text-xs text-slate-500">
-                      Hours: {place.opening_hours}
-                    </p>
+                    <div style={{ marginTop: "6px" }}>
+                      <strong>Hours:</strong> {place.opening_hours}
+                    </div>
                   )}
 
                   {place.phone && (
-                    <p className="mt-1 text-xs text-slate-500">
-                      Phone: {place.phone}
-                    </p>
+                    <div style={{ marginTop: "4px" }}>
+                      <strong>Phone:</strong> {place.phone}
+                    </div>
                   )}
 
                   {place.website && (
-                    <a
-                      href={place.website}
-                      target="_blank"
-                      rel="noreferrer"
-                      className="mt-2 inline-block text-xs font-medium text-sky-600 hover:underline"
+                    <div style={{ marginTop: "4px" }}>
+                      <a
+                        href={place.website}
+                        target="_blank"
+                        rel="noreferrer"
+                      >
+                        Visit website
+                      </a>
+                    </div>
+                  )}
+
+                  {onToggleFavorite && (
+                    <button
+                      type="button"
+                      onClick={() => onToggleFavorite(place)}
+                      style={{
+                        display: "flex",
+                        alignItems: "center",
+                        gap: "6px",
+                        marginTop: "10px",
+                        padding: "7px 10px",
+                        borderRadius: "8px",
+                        border: "1px solid #e2e8f0",
+                        background: isFavorite ? "#fff1f2" : "#ffffff",
+                        color: isFavorite ? "#e11d48" : "#334155",
+                        cursor: "pointer",
+                        fontWeight: 600,
+                      }}
                     >
-                      Visit website
-                    </a>
+                      <Heart
+                        size={15}
+                        fill={isFavorite ? "currentColor" : "none"}
+                      />
+                      {isFavorite ? "Remove favorite" : "Save place"}
+                    </button>
                   )}
                 </div>
               </Popup>
             </Marker>
-          ))}
-        </MapContainer>
+          );
+        })}
+      </MapContainer>
 
-        <div className="absolute left-4 top-4 z-[1000] rounded-2xl border border-slate-200 bg-white/95 px-4 py-3 shadow-lg backdrop-blur">
-          <p className="text-sm font-semibold text-slate-900">
-            Nearby places
-          </p>
-
-          {loading && (
-            <p className="mt-1 text-xs text-slate-500">
-              Loading places...
-            </p>
-          )}
-
-          {!loading && !error && (
-            <p className="mt-1 text-xs text-slate-500">
-              {places.length} places found
-            </p>
-          )}
-
-          {error && (
-            <p className="mt-1 text-xs text-red-600">
-              {error}
-            </p>
-          )}
+      <div className="absolute left-3 top-3 z-[1000] rounded-xl bg-white/95 px-3 py-2 text-xs font-semibold text-slate-700 shadow">
+        <div className="flex items-center gap-2">
+          <MapPin className="h-4 w-4 text-blue-600" />
+          {places.length} nearby places
         </div>
       </div>
 
-      <div className="flex flex-wrap gap-2 border-t border-slate-100 px-5 py-4">
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          📍 Destination
-        </span>
+      {loading && (
+        <div className="absolute bottom-3 left-3 z-[1000] rounded-xl bg-white px-3 py-2 text-sm shadow">
+          Loading nearby places…
+        </div>
+      )}
 
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          🏛️ Attractions
-        </span>
-
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          🍽️ Food
-        </span>
-
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          🏨 Hotels
-        </span>
-
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          🏥 Healthcare
-        </span>
-
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          🌳 Parks
-        </span>
-
-        <span className="rounded-full bg-slate-100 px-3 py-1 text-xs text-slate-600">
-          🚌 Transport
-        </span>
-      </div>
+      {error && (
+        <div className="absolute bottom-3 left-3 right-3 z-[1000] rounded-xl bg-white p-3 text-sm text-amber-800 shadow">
+          {error}
+        </div>
+      )}
     </div>
   );
 }
